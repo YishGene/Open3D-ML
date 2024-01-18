@@ -1,3 +1,4 @@
+import abc
 import math
 import sys
 import numpy as np
@@ -11,6 +12,8 @@ from .colormap import *
 from .labellut import *
 
 import time
+
+from typing import Type, Dict
 
 
 class Model:
@@ -31,6 +34,75 @@ class Model:
         def __init__(self, name, boxes):
             self.name = name
             self.boxes = boxes
+
+    # todo: unify with BoundingBoxData?
+    class GeomData(abc.ABC):
+        """
+        General Geometry data, has a name and data. Implement get_geometry
+            to make this create geometries for visualization
+        """
+        def __init__(self, name, geom_data):
+            self.name = name
+            self.geom_data = geom_data
+
+        @abc.abstractmethod
+        def get_geometry(self) -> Type[o3d.geometry.Geometry]:
+            # todo: get this to return something useful. 2D? 3D? Both?
+            raise NotImplementedError()
+
+    # TODO: move this into a general "extensions" folder?
+    class OccGrid(GeomData):
+        def init(self, name: str, geom_data: Dict):
+            """
+
+            Args:
+                name:
+                geom_data: Dict containing: 'coords': list of grid coordinates X and Y
+                                            'occ_data': 2-D array of int (0 - free, 1 - occupied: expand in future if required)
+
+            Returns:
+
+            """
+            super().__init__(name, geom_data)
+
+        def get_geometry(self):
+            GREEN = np.array((0, 0.9, 0))
+            RED = np.array((0.9, 0, 0))
+            GREY = (0.85, 0.85, 0.85)
+
+            OCC_GRID_VIZ_HEIGHT = -1.5  # m from body height for placing occ grid in the scene
+
+            occ_to_color = {0: GREEN,
+                            1: RED}
+
+            occ_data = self.geom_data['occ_data']
+            coords = self.geom_data['coords']
+            mesh = np.meshgrid(*[range(s) for s in occ_data.shape[:2]])[::-1]
+
+            all_vertices = [(ci, cj, OCC_GRID_VIZ_HEIGHT) for ci, cj in
+                            zip(coords[0].flatten('A'), coords[1].flatten('A'))]
+
+            colors = [occ_to_color[occ_data[i, j]] for i, j in zip(mesh[0].flatten(), mesh[1].flatten())]
+
+            indices = [(np.ravel_multi_index((i + 1, j + 1), occ_data.shape),
+                        np.ravel_multi_index((i, j + 1), occ_data.shape),
+                        np.ravel_multi_index((i, j), occ_data.shape),
+                        )
+                       for i in range(len(mesh[0]) - 1) for j in range(len(mesh[1]) - 1) if ~np.isnan(occ_data[i, j])]
+            indices += [(np.ravel_multi_index((i + 1, j), occ_data.shape),
+                         np.ravel_multi_index((i + 1, j + 1), occ_data.shape),
+                         np.ravel_multi_index((i, j), occ_data.shape),
+                         )
+                        for i in range(len(mesh[0]) - 1) for j in range(len(mesh[1]) - 1) if ~np.isnan(occ_data[i, j])]
+
+            vertices = o3d.utility.Vector3dVector(np.array(all_vertices, dtype=np.float32))
+            triangles = o3d.utility.Vector3iVector(np.array(indices))
+            np_colors = np.array(colors, dtype=np.float64)
+
+            o3dmesh = o3d.geometry.TriangleMesh(vertices=vertices, triangles=triangles)
+            o3dmesh.vertex_colors = o3d.utility.Vector3dVector(np_colors)
+
+            return o3dmesh
 
     def __init__(self):
         # Note: the tpointcloud cannot store the actual data arrays, because
@@ -1693,6 +1765,7 @@ class Visualizer:
                   data,
                   lut=None,
                   bounding_boxes=None,
+                  other_geoms=None,
                   width=1280,
                   height=768):
         """Visualize a custom point cloud data.
@@ -1721,6 +1794,7 @@ class Visualizer:
                 arrays, PyTorch tensors or TensorFlow tensors.
             lut: Optional lookup table for colors.
             bounding_boxes: Optional bounding boxes.
+            other_geoms: Optional other geometries. TODO: define interface
             width: window width.
             height: window height.
         """
@@ -1762,6 +1836,11 @@ class Visualizer:
             self._objects.bounding_box_data = box_data
         else:
             self._consolidate_bounding_boxes = True
+
+        if other_geoms is not None:
+            # currently a simple loop until we need something more extravagant as above with the boxes:
+            geoms_data = [geom.generate_data() for geom in other_geoms]
+            self._objects.other_geoms_data = geoms_data
 
         self._visualize("Open3D", width, height)
 
